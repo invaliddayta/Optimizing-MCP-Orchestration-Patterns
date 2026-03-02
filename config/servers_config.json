@@ -1,0 +1,23 @@
+{
+  "defaults": {
+    "environment": { "PYTHONUNBUFFERED": "1" }
+  },
+  "servers": {
+    "calculator-expert": {
+      "command": "${PYTHON}",
+      "args": ["-m", "mcp_server_calculator"]
+    },
+    "stockmarket-expert": {
+      "command": "${PYTHON}",
+      "args": ["mcpservers/stockmarket_mcp.py"]
+    },
+    "inventory-expert": {
+      "command": "${PYTHON}",
+      "args": ["mcpservers/inventory_mcp.py"]
+    },
+    "unit-conversion-expert": {
+      "command": "${PYTHON}",
+      "args": ["mcpservers/unitconv_mcp.py"]
+    }
+  }
+}

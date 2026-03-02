@@ -1,0 +1,45 @@
+{
+  "version": "0.2",
+  "experiments": [
+    {
+      "name": "14b-instruct + 4x7b-instruct",
+      "orchestrator": { "model": "qwen2.5:14b-instruct" },
+      "specialists": [
+        { "role": "calculator-expert",  "model": "qwen2.5:7b-instruct", "count": 1 },
+        { "role": "stockmarket-expert", "model": "qwen2.5:7b-instruct", "count": 1 },
+        { "role": "inventory-expert",   "model": "qwen2.5:7b-instruct", "count": 1 },
+        { "role": "unit-conversion-expert", "model": "qwen2.5:7b-instruct", "count": 1 }
+      ]
+    },
+    {
+      "name": "7b-instruct + 4x3b-instruct",
+      "orchestrator": { "model": "qwen2.5:7b-instruct" },
+      "specialists": [
+        { "role": "calculator-expert",  "model": "qwen2.5:3b-instruct", "count": 1 },
+        { "role": "stockmarket-expert", "model": "qwen2.5:3b-instruct", "count": 1 },
+        { "role": "inventory-expert",   "model": "qwen2.5:3b-instruct", "count": 1 },
+        { "role": "unit-conversion-expert", "model": "qwen2.5:3b-instruct", "count": 1 }
+      ]
+    },
+    {
+      "name": "3b-instruct + 4x1.5b-instruct",
+      "orchestrator": { "model": "qwen2.5:3b-instruct" },
+      "specialists": [
+        { "role": "calculator-expert",  "model": "qwen2.5:1.5b-instruct", "count": 1 },
+        { "role": "stockmarket-expert", "model": "qwen2.5:1.5b-instruct", "count": 1 },
+        { "role": "inventory-expert",   "model": "qwen2.5:1.5b-instruct", "count": 1 },
+        { "role": "unit-conversion-expert", "model": "qwen2.5:1.5b-instruct", "count": 1 }
+      ]
+    },
+    {
+      "name": "1.5b-instruct + 4x0.5b-instruct",
+      "orchestrator": { "model": "qwen2.5:1.5b-instruct" },
+      "specialists": [
+        { "role": "calculator-expert",  "model": "qwen2.5:0.5b-instruct", "count": 1 },
+        { "role": "stockmarket-expert", "model": "qwen2.5:0.5b-instruct", "count": 1 },
+        { "role": "inventory-expert",   "model": "qwen2.5:0.5b-instruct", "count": 1 },
+        { "role": "unit-conversion-expert", "model": "qwen2.5:0.5b-instruct", "count": 1 }
+      ]
+    }
+  ]
+}

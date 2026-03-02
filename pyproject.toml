@@ -1,0 +1,11 @@
+[project]
+name = "agent-arch-eval"
+version = "0.1.0"
+readme = "README.md"
+requires-python = ">=3.13"
+dependencies = [
+    "aiohttp>=3.12.15",
+    "mcp-server-calculator>=0.2.0",
+    "mcp[cli]>=1.12.4",
+    "pandas>=3.0.1",
+]

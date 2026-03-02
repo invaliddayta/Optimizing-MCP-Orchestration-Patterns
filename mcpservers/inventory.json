@@ -1,0 +1,19 @@
+{
+  "products": [
+    {
+      "name": "battery_module",
+      "stock_units": 10,
+      "base_price_eur": 200.0,
+      "weight_per_unit_lb": 5.0,
+      "tsla_shares_per_unit": 0.0
+    },
+    {
+      "name": "chip_module",
+      "stock_units": 4,
+      "base_price_eur": 50.0,
+      "weight_per_unit_lb": 1.5,
+      "tsla_shares_per_unit": 0.1
+    }
+  ]
+}
+
