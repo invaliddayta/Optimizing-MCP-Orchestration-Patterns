@@ -17,6 +17,7 @@ from lab.agent import Budget, ToolResult, run_agent
 from lab.eval import RunLog, fingerprint, load_cases, read_events, score, summarize
 from lab.mcp import ToolRegistry
 from lab.model import ChatClient
+from lab.protocol import inspect_protocol
 
 ROOT = Path(__file__).resolve().parent.parent
 SYSTEM = (
@@ -123,6 +124,16 @@ def parser():
         sub.add_argument("--tool-timeout", type=positive, default=30)
         sub.add_argument("--max-tokens", type=positive, default=1024)
         sub.add_argument("--seed", type=int, default=0)
+        sub.add_argument(
+            "--model-metadata",
+            type=Path,
+            help="JSON metadata with endpoint-specific tool_protocols declarations",
+        )
+        sub.add_argument(
+            "--require-native",
+            action="store_true",
+            help="require native declarations with matching observed template/build evidence",
+        )
         if command == "run":
             sub.add_argument("--mode", choices=["single", "delegated", "both"], default="both")
             sub.add_argument("--suite", type=Path, default=ROOT / "config/eval_set.json")
@@ -142,16 +153,15 @@ def parser():
             sub.add_argument("--relative-tolerance", type=finite_nonnegative, default=0.01)
             sub.add_argument("--absolute-tolerance", type=finite_nonnegative, default=1e-9)
             sub.add_argument("--output", type=Path, help="new run directory (must not exist)")
-            sub.add_argument(
-                "--model-metadata",
-                type=Path,
-                help="optional JSON recording GGUF hash, quantization, template, server flags",
-            )
     report = commands.add_parser("report")
     report.add_argument("directory", type=Path)
     trace = commands.add_parser("trace")
     trace.add_argument("directory", type=Path)
-    trace.add_argument("--case", required=True, help="case ID, e.g. case-001")
+    selection = trace.add_mutually_exclusive_group(required=True)
+    selection.add_argument("--case", help="case ID, e.g. case-001")
+    selection.add_argument(
+        "--preflight", action="store_true", help="inspect protocol evidence and probe failures"
+    )
     trace.add_argument("--mode", choices=["single", "delegated"])
     trace.add_argument("--iteration", type=positive, default=1)
     return root
@@ -159,6 +169,16 @@ def parser():
 
 async def execute(args):
     cases, log = [], None
+    metadata = json.loads(args.model_metadata.read_text()) if args.model_metadata else None
+    if metadata is not None and not isinstance(metadata, dict):
+        raise ValueError("Model metadata must be a JSON object")
+
+    def record(event):
+        if log:
+            log.emit(event)
+        elif event.get("passed") is False:
+            print(json.dumps(event, indent=2), file=sys.stderr)
+
     if args.command == "run":
         cases = load_cases(args.suite)
         if args.case:
@@ -186,7 +206,7 @@ async def execute(args):
             ]
         )
         manifest = {
-            "schema_version": 1,
+            "schema_version": 2,
             "run_id": run_id,
             "planned": planned,
             "cases": cases,
@@ -201,9 +221,7 @@ async def execute(args):
             "source_sha256": {str(p.relative_to(ROOT)): fingerprint(p) for p in files},
             "suite_sha256": fingerprint(args.suite),
             "servers_sha256": fingerprint(args.servers),
-            "model_metadata": json.loads(args.model_metadata.read_text())
-            if args.model_metadata
-            else None,
+            "model_metadata": metadata,
         }
         log = RunLog(directory, manifest)
         print(f"Run: {directory}", flush=True)
@@ -225,16 +243,52 @@ async def execute(args):
                 args.max_tokens,
                 seed=args.seed,
             )
-            checks = [await manager.preflight()]
-            if (args.command == "doctor" or args.mode != "single") and (
-                worker.model != manager.model or worker.base_url != manager.base_url
-            ):
-                checks.append(await worker.preflight())
+            clients = {"manager": manager}
+            if args.command == "doctor" or args.mode != "single":
+                clients["worker"] = worker
+            protocols, inspected = {}, {}
+            for role, client in clients.items():
+                key = (client.base_url, client.model)
+                if key not in inspected:
+                    inspected[key] = await inspect_protocol(client, metadata)
+                protocols[role] = inspected[key]
+            record({"type": "protocol_provenance", "models": protocols})
+            for role, evidence in protocols.items():
+                if evidence["classification"] != "native_declared":
+                    detail = "; ".join(evidence["issues"]) or "Generic handler declared"
+                    if args.require_native:
+                        if args.command == "doctor":
+                            print(
+                                json.dumps(
+                                    {"type": "protocol_provenance", "models": protocols}, indent=2
+                                ),
+                                file=sys.stderr,
+                            )
+                        raise ValueError(
+                            f"{role}: --require-native rejected "
+                            f"{evidence['classification']}: {detail}"
+                        )
+                    if evidence["classification"] == "unverified":
+                        print(
+                            f"Warning: {role} tool protocol is unverified: {detail}",
+                            file=sys.stderr,
+                        )
+            checks, checked = [], set()
+            for client in clients.values():
+                key = (client.base_url, client.model)
+                if key not in checked:
+                    checks.append(await client.preflight(emit=record))
+                    checked.add(key)
             async with ToolRegistry(args.servers.resolve(), args.tool_timeout) as registry:
                 tools = registry.tools()
                 if not tools:
                     raise ValueError("No MCP tools discovered")
-                ready = {"type": "preflight", "models": checks, "tools": tools}
+                ready = {
+                    "type": "preflight",
+                    "models": checks,
+                    "tools": tools,
+                    "tool_protocols": protocols,
+                }
                 if args.command == "doctor":
                     print(json.dumps(ready, indent=2))
                     return 0
@@ -320,7 +374,15 @@ def main():
             return 0
         if args.command == "trace":
             for event in read_events(args.directory):
-                if (
+                if args.preflight:
+                    if event["type"] in {
+                        "protocol_provenance",
+                        "protocol_probe",
+                        "preflight",
+                        "suite_error",
+                    }:
+                        print(json.dumps(event, indent=2))
+                elif (
                     event.get("case_id") == args.case
                     and event.get("iteration") == args.iteration
                     and (args.mode is None or event.get("mode") == args.mode)

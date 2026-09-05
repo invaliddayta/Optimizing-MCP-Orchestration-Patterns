@@ -5,7 +5,7 @@ import aiohttp
 from aiohttp import web
 
 from lab.model import ChatClient, ModelError
-from tests.fakes import call, response
+from tests.fakes import call, protocol_reply, response
 
 
 class ModelTests(unittest.IsolatedAsyncioTestCase):
@@ -14,19 +14,20 @@ class ModelTests(unittest.IsolatedAsyncioTestCase):
         self.status = 200
         self.delay = 0
         self.requests = []
+        self.script = None
 
         async def handler(request):
-            self.requests.append(await request.json())
+            body = await request.json()
+            self.requests.append(body)
+            reply = self.script(body) if self.script else self.reply
             if self.delay:
                 await asyncio.sleep(self.delay)
             return web.json_response(
                 {
-                    "choices": [
-                        {"message": self.reply.message, "finish_reason": self.reply.finish_reason}
-                    ],
+                    "choices": [{"message": reply.message, "finish_reason": reply.finish_reason}],
                     "usage": {
-                        "prompt_tokens": self.reply.prompt_tokens,
-                        "completion_tokens": self.reply.completion_tokens,
+                        "prompt_tokens": reply.prompt_tokens,
+                        "completion_tokens": reply.completion_tokens,
                     },
                 },
                 status=self.status,
@@ -83,3 +84,51 @@ class ModelTests(unittest.IsolatedAsyncioTestCase):
         self.reply = response('CALL: probe {"value": 7}')
         with self.assertRaisesRegex(ModelError, "preflight failed"):
             await self.client.preflight()
+
+    async def test_preflight_checks_auto_roundtrip_and_no_tool(self):
+        self.script = protocol_reply
+        events = []
+        result = await self.client.preflight(emit=events.append)
+        self.assertTrue(result["protocol_roundtrip"])
+        self.assertNotIn("native_tool_roundtrip", result)
+        self.assertEqual(
+            set(result["checks"]), {"forced_call", "auto_call", "tool_result", "no_tool"}
+        )
+        self.assertEqual([r["tool_choice"] for r in self.requests[1:]], ["auto"] * 3)
+        self.assertEqual(len(self.requests[2]["messages"]), 3)
+        self.assertEqual([e["stage"] for e in events], list(result["checks"]))
+
+    async def test_forced_success_does_not_mask_auto_failure(self):
+        self.script = lambda body: (
+            protocol_reply(body) if isinstance(body["tool_choice"], dict) else response("7")
+        )
+        events = []
+        with self.assertRaisesRegex(ModelError, "auto_call preflight failed"):
+            await self.client.preflight(emit=events.append)
+        self.assertTrue(events[0]["passed"])
+        self.assertFalse(events[1]["passed"])
+        self.assertEqual(events[1]["message"]["content"], "7")
+
+    async def test_tool_result_must_be_used(self):
+        self.script = lambda body: (
+            response("7") if body["messages"][-1]["role"] == "tool" else protocol_reply(body)
+        )
+        with self.assertRaisesRegex(ModelError, "tool_result preflight failed"):
+            await self.client.preflight()
+
+    async def test_unnecessary_tool_call_fails(self):
+        self.script = lambda body: (
+            response(None, [call("probe", {"value": 7})])
+            if "READY" in body["messages"][0]["content"]
+            else protocol_reply(body)
+        )
+        with self.assertRaisesRegex(ModelError, "no_tool preflight failed"):
+            await self.client.preflight()
+
+    async def test_probe_http_failure_records_stage(self):
+        self.status = 500
+        events = []
+        with self.assertRaises(ModelError):
+            await self.client.preflight(emit=events.append)
+        self.assertFalse(events[0]["passed"])
+        self.assertEqual(events[0]["stage"], "forced_call")

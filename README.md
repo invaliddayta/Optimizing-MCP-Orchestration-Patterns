@@ -3,7 +3,7 @@
 A small local benchmark for one question: **when does delegating to tool-scoped
 workers outperform one model with all the tools?**
 
-One agent loop, two configurations. Native tool calls through llama.cpp's
+One agent loop, two configurations. Structured function calls through llama.cpp's
 `llama-server`, actual MCP subprocesses, and inspectable results. No Ollama,
 agent framework, model scheduler, or Python environment bootstrap.
 
@@ -52,10 +52,14 @@ python -m lab report results/smoke
 python -m lab trace results/smoke --case case-001 --mode delegated
 ```
 
-`doctor` checks a native tool-call/result round trip and starts/discovers all MCP
-tools. Model and chat-template compatibility matters: a model emitting `CALL:`
-text does not pass. `run` performs the same preflight before executing cases.
-Preflight calls and server startup are excluded from task metrics.
+`doctor` checks API-level tool behavior and starts/discovers all MCP tools. The
+four model requests test forced calling, automatic selection of a lookup tool,
+consumption of its returned value with automatic tool choice, and answering a
+task that needs no tool while tools are still offered. A forced-call pass alone,
+`CALL:` text, or an answer that ignores the tool result does not pass.
+`run` performs the same preflight before executing cases. Preflight calls and
+server startup are excluded from task metrics. These probes test behavior, not
+whether the model was trained on the server's selected format.
 
 `--output` must be a new directory. Omitting it creates a unique directory under
 `results/`. The default is both modes, one repetition, sequential execution.
@@ -108,8 +112,8 @@ Each run contains two files:
   answers, settings, Python/dependency versions, code and configuration hashes,
   and optional model metadata.
 - `events.jsonl`: flushed, append-only model requests/responses, tool results,
-  worker outcomes, case results, and suite failures. This is the results source
-  of truth; `report` derives its summary from these records.
+  protocol evidence/probes, worker outcomes, case results, and suite failures.
+  This is the results source of truth; `report` derives its summary from these records.
 
 Raw answers and parsed values are separate. Only a complete, finite numeric
 answer is scored. Labels, prose, `FINAL:`, truncated responses, and HTTP error
@@ -129,11 +133,33 @@ Exit code 1 means setup or execution failed for at least one case; a wrong but
 well-formed answer does not itself fail the command. Ctrl-C exits 130 and preserves
 already written records. Reports never append to or overwrite historical logs.
 
-Model aliases do not identify weights or templates. For reproducible experiments,
-pass `--model-metadata metadata.json` with your GGUF SHA-256, quantization, template,
-llama.cpp version, launch flags, and hardware. This JSON is preserved as
-user-supplied metadata, not independently verified. Traces contain prompts and tool
-results; keep sensitive data out of public run artifacts.
+Traces contain prompts, server paths/templates and tool results; keep sensitive
+data out of public run artifacts.
+
+## Tool Protocol Evidence
+
+**An OpenAI-compatible JSON API is not evidence of native tool-use training.**
+llama-server can use a model-specific handler or fall back to a generic format.
+The harness records server templates and build information, tests tool behavior,
+and keeps observed facts separate from user declarations about weights and training.
+
+Reports label each model role `native_declared`, `generic_declared`, or `unverified`.
+Smoke runs without evidence remain allowed, with warnings. For stricter experiments,
+provide endpoint-specific metadata and enable `--require-native`:
+
+```sh
+python -m lab run --model local --limit 3 --model-metadata metadata.json \
+  --require-native --output results/native-smoke
+python -m lab trace results/native-smoke --preflight
+```
+
+The gate requires native declarations with matching observed template hashes and
+build information for both manager and worker. **It does not independently verify
+weights, handler selection, or training history.** Older runs without evidence stay
+unverified; do not pool different protocol conditions into one comparison.
+
+See the [tool protocol guide](docs/tool-protocol.md) for the metadata format,
+model/template selection, and exactly what is checked.
 
 ## Development And Scope
 
@@ -147,7 +173,7 @@ Checks need neither a GPU nor model weights. Tests include a scripted HTTP model
 with real MCP subprocesses for both modes, native transcript validation, shared
 budgets, scoring failures, and subprocess startup/cancellation cleanup.
 
-The implementation is in `lab/{model,agent,mcp,eval,__main__}.py`. MCP server
+The implementation is in `lab/{model,protocol,agent,mcp,eval,__main__}.py`. MCP server
 commands are in `config/servers_config.json`; only configure trusted executables.
 Default subprocess cwd is the config's parent directory's parent. An explicit
 server `cwd` is resolved relative to the config directory. Tools are namespaced

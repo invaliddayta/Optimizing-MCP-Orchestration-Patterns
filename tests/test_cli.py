@@ -10,10 +10,10 @@ from unittest.mock import patch
 
 from aiohttp import web
 
-from lab.__main__ import execute, parser
+from lab.__main__ import execute, main, parser
 from lab.eval import read_events, summarize
 from lab.mcp import ToolRegistry
-from tests.fakes import call
+from tests.fakes import PROPS, call, declaration, protocol_reply
 
 
 class CLITests(unittest.IsolatedAsyncioTestCase):
@@ -29,7 +29,8 @@ class CLITests(unittest.IsolatedAsyncioTestCase):
             if self.fail_requests:
                 return web.json_response({"error": "unavailable"}, status=503)
             messages = body["messages"]
-            if self.fail_cases and messages[0]["content"] != "Call probe with value 7.":
+            probe = protocol_reply(body)
+            if self.fail_cases and probe is None:
                 return web.json_response({"error": "case failure"}, status=500)
             pending = set()
             for message in messages:
@@ -44,11 +45,9 @@ class CLITests(unittest.IsolatedAsyncioTestCase):
             steps = sum(m["role"] == "tool" for m in messages)
             calls = None
             content = self.final_answer
-            if messages[0]["content"] == "Call probe with value 7.":
-                if steps == 0:
-                    calls = [call("probe", {"value": 7})]
-                else:
-                    content = "7"
+            if probe is not None:
+                calls = probe.message.get("tool_calls")
+                content = probe.message["content"]
             elif tools == ["delegate"]:
                 if steps < 3:
                     roles = ["inventory-expert", "stockmarket-expert", "calculator-expert"]
@@ -88,6 +87,11 @@ class CLITests(unittest.IsolatedAsyncioTestCase):
 
         app = web.Application()
         app.router.add_post("/v1/chat/completions", handler)
+
+        async def props(request):
+            return web.json_response(PROPS)
+
+        app.router.add_get("/props", props)
         self.runner = web.AppRunner(app)
         await self.runner.setup()
         site = web.TCPSite(self.runner, "127.0.0.1", 0)
@@ -141,6 +145,18 @@ class CLITests(unittest.IsolatedAsyncioTestCase):
             manifest = json.loads((directory / "manifest.json").read_text())
             self.assertIn("flake.lock", manifest["source_sha256"])
             self.assertEqual(manifest["cases"][0]["expected"], "29060.4")
+            self.assertEqual(summary["single"]["protocol_condition"], {"manager": "unverified"})
+            probes = [e for e in read_events(directory) if e["type"] == "protocol_probe"]
+            self.assertEqual(len(probes), 4)
+            self.assertTrue(all(e["passed"] for e in probes))
+            output = io.StringIO()
+            with (
+                patch("sys.argv", ["lab", "trace", str(directory), "--preflight"]),
+                contextlib.redirect_stdout(output),
+            ):
+                self.assertEqual(main(), 0)
+            self.assertIn('"type": "protocol_probe"', output.getvalue())
+            self.assertNotIn('"type": "case_result"', output.getvalue())
 
     async def test_setup_failure_preserves_planned_matrix(self):
         self.fail_requests = True
@@ -257,6 +273,84 @@ class CLITests(unittest.IsolatedAsyncioTestCase):
             result = next(e for e in read_events(directory) if e["type"] == "case_result")
             self.assertEqual(result["status"], "invalid_output")
             self.assertIn("finite number", result["error"])
+
+    async def test_require_native_rejects_unverified_before_inference(self):
+        args = parser().parse_args(
+            ["doctor", "--model", "fake", "--base-url", self.base_url, "--require-native"]
+        )
+        output = io.StringIO()
+        with (
+            contextlib.redirect_stderr(output),
+            self.assertRaisesRegex(ValueError, "rejected unverified"),
+        ):
+            await execute(args)
+        self.assertEqual(self.requests, [])
+        evidence = json.loads(output.getvalue())
+        self.assertIn("chat_template", evidence["models"]["manager"]["observed"]["template_sha256"])
+
+    async def test_require_native_checks_worker_independently(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            metadata = Path(tmp) / "metadata.json"
+            metadata.write_text(
+                json.dumps(
+                    {
+                        "tool_protocols": [
+                            declaration(self.base_url),
+                            declaration(self.base_url, "small", "generic"),
+                        ]
+                    }
+                )
+            )
+            args = parser().parse_args(
+                [
+                    "doctor",
+                    "--model",
+                    "fake",
+                    "--base-url",
+                    self.base_url,
+                    "--worker-model",
+                    "small",
+                    "--model-metadata",
+                    str(metadata),
+                    "--require-native",
+                ]
+            )
+            with (
+                contextlib.redirect_stderr(io.StringIO()),
+                self.assertRaisesRegex(ValueError, "worker: .*generic_declared"),
+            ):
+                await execute(args)
+            self.assertEqual(self.requests, [])
+
+    async def test_native_declaration_is_recorded_not_certified(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            directory = Path(tmp) / "run"
+            metadata = Path(tmp) / "metadata.json"
+            metadata.write_text(json.dumps({"tool_protocols": [declaration(self.base_url)]}))
+            args = parser().parse_args(
+                [
+                    "run",
+                    "--model",
+                    "fake",
+                    "--base-url",
+                    self.base_url,
+                    "--limit",
+                    "1",
+                    "--output",
+                    str(directory),
+                    "--require-native",
+                    "--model-metadata",
+                    str(metadata),
+                ]
+            )
+            with contextlib.redirect_stdout(io.StringIO()):
+                self.assertEqual(await execute(args), 0)
+            self.assertEqual(
+                summarize(directory)["modes"]["delegated"]["protocol_condition"],
+                {"manager": "native_declared", "worker": "native_declared"},
+            )
+            evidence = next(e for e in read_events(directory) if e["type"] == "protocol_provenance")
+            self.assertIn("user-declared", evidence["models"]["manager"]["verification_scope"])
 
 
 class ArgumentsTests(unittest.TestCase):

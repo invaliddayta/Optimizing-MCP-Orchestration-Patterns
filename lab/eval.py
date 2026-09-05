@@ -80,7 +80,12 @@ def summarize(directory: Path) -> dict:
     planned = {(p["case_id"], p["mode"], p["iteration"]) for p in manifest["planned"]}
     records = {}
     suite_status = "incomplete"
+    protocols = {"manager": "unverified", "worker": "unverified"}
     for event in read_events(directory):
+        if event["type"] == "protocol_provenance":
+            protocols.update(
+                {role: evidence["classification"] for role, evidence in event["models"].items()}
+            )
         if event["type"] == "suite_finished":
             suite_status = "finished"
         elif event["type"] == "suite_error":
@@ -97,6 +102,10 @@ def summarize(directory: Path) -> dict:
         statuses = Counter(row["status"] for row in rows)
         statuses["missing"] = total - len(rows)
         modes[mode] = {
+            "protocol_condition": {
+                role: protocols[role]
+                for role in (["manager"] if mode == "single" else ["manager", "worker"])
+            },
             "planned": total,
             "finished": len(rows),
             "statuses": dict(statuses),

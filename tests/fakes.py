@@ -1,7 +1,31 @@
 import copy
+import hashlib
 import json
 
 from lab.model import ChatResponse
+
+PROPS = {
+    "chat_template": "test template with tools",
+    "build_info": "b6981-test",
+    "model_path": "/models/test.gguf",
+}
+
+
+def declaration(base_url, model="fake", format="native"):
+    return {
+        "base_url": base_url,
+        "model": model,
+        "format": format,
+        "handler": "Hermes 2 Pro" if format == "native" else "Generic",
+        "handler_source": "Test fixture server log",
+        "training_source": "Test fixture model card",
+        "gguf_sha256": "a" * 64,
+        "quantization": "Q4_K_M",
+        "build_info": PROPS["build_info"],
+        "chat_template_sha256": hashlib.sha256(PROPS["chat_template"].encode()).hexdigest(),
+        "chat_template_tool_use_sha256": None,
+    }
+
 
 TOOL = {
     "type": "function",
@@ -33,6 +57,20 @@ def call(name="calculate", args=None, ident="call-1"):
             "arguments": json.dumps(args if args is not None else {"value": 2}),
         },
     }
+
+
+def protocol_reply(request):
+    names = {tool["function"]["name"] for tool in request.get("tools", [])}
+    if names != {"probe", "lookup_probe"}:
+        return None
+    messages = request["messages"]
+    if isinstance(request["tool_choice"], dict):
+        return response(None, [call("probe", {"value": 7})])
+    if messages[-1]["role"] == "tool":
+        return response(messages[-1]["content"])
+    if "READY" in messages[0]["content"]:
+        return response("READY")
+    return response(None, [call("lookup_probe", {"key": "alpha"})])
 
 
 class FakeClient:

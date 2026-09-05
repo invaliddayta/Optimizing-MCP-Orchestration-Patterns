@@ -41,6 +41,7 @@ class EvalTests(unittest.TestCase):
             ]
             manifest = {"run_id": "test", "planned": planned}
             log = RunLog(directory, manifest)
+            log.emit({"type": "preflight", "models": [{"native_tool_roundtrip": True}]})
             log.emit(
                 {
                     "type": "case_result",
@@ -55,6 +56,7 @@ class EvalTests(unittest.TestCase):
             with (directory / "events.jsonl").open("a") as stream:
                 stream.write('{"type":')
             summary = summarize(directory)["modes"]["single"]
+            self.assertEqual(summary["protocol_condition"], {"manager": "unverified"})
             self.assertEqual(summary["accuracy"], 0.5)
             self.assertEqual(summary["statuses"]["missing"], 1)
             self.assertFalse(summary["usage_complete"])

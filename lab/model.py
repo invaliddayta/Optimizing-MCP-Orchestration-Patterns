@@ -2,6 +2,7 @@
 
 import json
 import math
+import random
 from dataclasses import dataclass
 from urllib.parse import urlsplit
 
@@ -121,58 +122,121 @@ class ChatClient:
         except (KeyError, IndexError, TypeError, AttributeError, ValueError) as exc:
             raise ModelError(f"Malformed chat response: {exc}") from exc
 
-    async def preflight(self) -> dict:
-        tool = {
-            "type": "function",
-            "function": {
-                "name": "probe",
-                "description": "Return the given integer.",
-                "parameters": {
-                    "type": "object",
-                    "properties": {"value": {"type": "integer"}},
-                    "required": ["value"],
-                    "additionalProperties": False,
-                },
-            },
-        }
-        messages = [{"role": "user", "content": "Call probe with value 7."}]
-        first = await self.chat(
-            messages=messages,
-            tools=[tool],
-            tool_choice={
+    async def preflight(self, emit=lambda event: None) -> dict:
+        tools = [
+            {
                 "type": "function",
-                "function": {"name": "probe"},
-            },
-        )
-        calls = first.message.get("tool_calls") or []
-        try:
-            valid = (
-                first.finish_reason in {"stop", "tool_calls"}
-                and len(calls) == 1
-                and calls[0]["function"]["name"] == "probe"
-                and json.loads(calls[0]["function"]["arguments"]) == {"value": 7}
-            )
-        except ValueError:
-            valid = False
-        if not valid:
-            raise ModelError(
-                "Tool-call preflight failed; check model and llama-server chat template"
-            )
-        messages.extend(
-            [
-                first.message,
-                {
-                    "role": "tool",
-                    "tool_call_id": calls[0]["id"],
-                    "content": "7",
+                "function": {
+                    "name": "probe",
+                    "description": "Return the given integer.",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {"value": {"type": "integer"}},
+                        "required": ["value"],
+                        "additionalProperties": False,
+                    },
                 },
-            ]
-        )
-        final = await self.chat(messages=messages, tools=[tool], tool_choice="none")
-        if (
-            final.finish_reason != "stop"
-            or final.message.get("tool_calls")
-            or not (final.message.get("content") or "").strip()
-        ):
-            raise ModelError("Tool-result preflight failed; check chat template and token limit")
-        return {"base_url": self.base_url, "model": self.model, "native_tool_roundtrip": True}
+            },
+            {
+                "type": "function",
+                "function": {
+                    "name": "lookup_probe",
+                    "description": "Look up the current integer value for a key. "
+                    "The value is external data and cannot be inferred without calling this tool.",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {"key": {"type": "string"}},
+                        "required": ["key"],
+                        "additionalProperties": False,
+                    },
+                },
+            },
+        ]
+        value = str(random.Random(self.seed).randrange(10000, 100000))
+        checks = {}
+        messages = []
+        for stage in ("forced_call", "auto_call", "tool_result", "no_tool"):
+            choice = "auto"
+            expected_call = None
+            if stage == "forced_call":
+                messages = [{"role": "user", "content": "Call probe with value 7."}]
+                choice = {"type": "function", "function": {"name": "probe"}}
+                expected_call = ("probe", {"value": 7})
+            elif stage == "auto_call":
+                messages = [
+                    {
+                        "role": "user",
+                        "content": "What is the current value for key alpha? "
+                        "Look it up, then reply with only the integer returned by the tool.",
+                    }
+                ]
+                expected_call = ("lookup_probe", {"key": "alpha"})
+            elif stage == "no_tool":
+                messages = [
+                    {
+                        "role": "user",
+                        "content": "Reply with exactly READY. "
+                        "This is a formatting task; no lookup or external data is needed.",
+                    }
+                ]
+            event = {
+                "type": "protocol_probe",
+                "base_url": self.base_url,
+                "model": self.model,
+                "stage": stage,
+                "tool_choice": choice,
+                "messages": list(messages),
+                "tools": tools,
+            }
+            try:
+                reply = await self.chat(messages=messages, tools=tools, tool_choice=choice)
+            except (ModelError, TimeoutError) as exc:
+                emit({**event, "passed": False, "error": f"{type(exc).__name__}: {exc}"})
+                raise
+            calls = reply.message.get("tool_calls") or []
+            if expected_call:
+                try:
+                    valid = (
+                        reply.finish_reason in {"stop", "tool_calls"}
+                        and len(calls) == 1
+                        and calls[0]["function"]["name"] == expected_call[0]
+                        and json.loads(calls[0]["function"]["arguments"]) == expected_call[1]
+                    )
+                except ValueError:
+                    valid = False
+            else:
+                valid = (
+                    reply.finish_reason == "stop"
+                    and not calls
+                    and (reply.message.get("content") or "").strip()
+                    == (value if stage == "tool_result" else "READY")
+                )
+            emit(
+                {
+                    **event,
+                    "message": reply.message,
+                    "finish_reason": reply.finish_reason,
+                    "passed": valid,
+                    "prompt_tokens": reply.prompt_tokens,
+                    "completion_tokens": reply.completion_tokens,
+                }
+            )
+            if not valid:
+                raise ModelError(
+                    f"{stage} preflight failed; inspect protocol_probe events and "
+                    "check the model, chat template and token limit"
+                )
+            checks[stage] = True
+            if stage == "auto_call":
+                messages.extend(
+                    [
+                        reply.message,
+                        {"role": "tool", "tool_call_id": calls[0]["id"], "content": value},
+                    ]
+                )
+        return {
+            "base_url": self.base_url,
+            "model": self.model,
+            "protocol_roundtrip": True,
+            "checks": checks,
+        }
