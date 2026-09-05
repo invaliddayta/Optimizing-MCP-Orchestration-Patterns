@@ -1,11 +1,16 @@
 [project]
 name = "agent-arch-eval"
-version = "0.1.0"
+version = "0.2.0"
 readme = "README.md"
-requires-python = ">=3.13"
+requires-python = ">=3.11"
 dependencies = [
-    "aiohttp>=3.12.15",
-    "mcp-server-calculator>=0.2.0",
-    "mcp[cli]>=1.12.4",
-    "pandas>=3.0.1",
+    "aiohttp>=3.12,<4",
+    "mcp>=1.12.4,<2",
+    "jsonschema>=4,<5",
 ]
+
+# Nix supplies the interpreter and dependencies; no Python environment bootstrap.
+[tool.ruff]
+target-version = "py311"
+line-length = 100
+include = ["lab/**/*.py", "tests/**/*.py", "mcpservers/calculator_mcp.py"]

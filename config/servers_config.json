@@ -5,7 +5,7 @@
   "servers": {
     "calculator-expert": {
       "command": "${PYTHON}",
-      "args": ["-m", "mcp_server_calculator"]
+      "args": ["mcpservers/calculator_mcp.py"]
     },
     "stockmarket-expert": {
       "command": "${PYTHON}",
